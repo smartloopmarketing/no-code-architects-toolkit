@@ -16,7 +16,7 @@
 
 
 
-from flask import Flask, request
+from flask import Flask, request, jsonify, Response
 from queue import Queue
 from services.webhook import send_webhook
 import threading
@@ -199,6 +199,119 @@ def create_app():
     return app
 
 app = create_app()
+
+# --- Minimal interactive API docs (Swagger UI and ReDoc) ---
+def _generate_openapi_spec(flask_app: Flask) -> dict:
+    """Generate a minimal OpenAPI 3.0 spec by introspecting Flask routes.
+
+    Note: This provides paths and methods with generic responses. It does not
+    attempt to infer request/response schemas. Security header is documented.
+    """
+    paths: dict = {}
+    for rule in flask_app.url_map.iter_rules():
+        # Skip Flask's static rules or internal endpoints
+        if rule.endpoint == 'static' or rule.rule.startswith('/static'):
+            continue
+
+        # Only document standard HTTP methods
+        methods = [m for m in sorted(rule.methods) if m in ['GET', 'POST', 'PUT', 'DELETE', 'PATCH']]
+        if not methods:
+            continue
+
+        # Convert Flask-style <param> to OpenAPI-style {param}
+        path_template = rule.rule.replace('<', '{').replace('>', '}')
+
+        path_item: dict = {}
+        for method in methods:
+            path_item[method.lower()] = {
+                'summary': rule.endpoint,
+                'responses': {
+                    '200': {
+                        'description': 'OK'
+                    }
+                },
+                'security': [{'ApiKeyAuth': []}]
+            }
+
+        paths[path_template] = path_item
+
+    spec = {
+        'openapi': '3.0.3',
+        'info': {
+            'title': 'No-Code Architects Toolkit API',
+            'version': str(BUILD_NUMBER),
+            'description': 'Auto-generated minimal OpenAPI spec from Flask routes.'
+        },
+        'servers': [
+            {'url': '/'}
+        ],
+        'paths': paths,
+        'components': {
+            'securitySchemes': {
+                'ApiKeyAuth': {
+                    'type': 'apiKey',
+                    'in': 'header',
+                    'name': 'x-api-key'
+                }
+            }
+        },
+        'security': [{'ApiKeyAuth': []}]
+    }
+    return spec
+
+
+@app.route('/openapi.json', methods=['GET'])
+def openapi_json() -> Response:
+    return jsonify(_generate_openapi_spec(app))
+
+
+@app.route('/docs', methods=['GET'])
+def swagger_ui() -> Response:
+    # Serve Swagger UI from CDN, pointing at our /openapi.json
+    html = """
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1"/>
+        <title>API Docs</title>
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"/>
+      </head>
+      <body>
+        <div id="swagger-ui"></div>
+        <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+        <script>
+          window.ui = SwaggerUIBundle({
+            url: '/openapi.json',
+            dom_id: '#swagger-ui',
+            presets: [SwaggerUIBundle.presets.apis],
+            layout: 'BaseLayout'
+          });
+        </script>
+      </body>
+    </html>
+    """
+    return Response(html, mimetype='text/html')
+
+
+@app.route('/redoc', methods=['GET'])
+def redoc_ui() -> Response:
+    html = """
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1"/>
+        <title>API Docs</title>
+        <style> body { margin: 0; padding: 0; } </style>
+        <script src="https://cdn.jsdelivr.net/npm/redoc@next/bundles/redoc.standalone.js"></script>
+      </head>
+      <body>
+        <redoc spec-url="/openapi.json"></redoc>
+      </body>
+    </html>
+    """
+    return Response(html, mimetype='text/html')
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
