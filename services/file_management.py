@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 import mimetypes
 import boto3
 import shutil
+import logging
 
 def get_extension_from_url(url):
     """Extract file extension from URL or content type.
@@ -89,7 +90,10 @@ def _download_from_s3_with_credentials(media_url: str, destination_path: str) ->
     secret_key = os.environ.get('S3_SECRET_KEY') or os.environ.get('AWS_SECRET_ACCESS_KEY')
 
     if not access_key or not secret_key:
+        logging.getLogger(__name__).debug(f"No S3 credentials found for authenticated download")
         return False
+
+    logging.getLogger(__name__).info(f"Attempting S3 authenticated download: bucket={bucket}, key={key}")
 
     session = boto3.Session(
         aws_access_key_id=access_key,
@@ -105,14 +109,14 @@ def _download_from_s3_with_credentials(media_url: str, destination_path: str) ->
         return False
     with open(destination_path, 'wb') as fh:
         shutil.copyfileobj(body, fh)
+    logging.getLogger(__name__).info(f"S3 authenticated download successful: {media_url}")
     return True
 
 def download_file(url, storage_path="/tmp/"):
     """Download a file from URL to local storage.
 
-    - If the URL is public (HTTP 200), stream via requests.
-    - If it's an S3 URL and public access is denied (e.g., 403), attempt to
-      download using configured S3 credentials.
+    - For S3 URLs: Try authenticated download first if credentials are available
+    - For other URLs or if S3 auth fails: Fall back to public HTTP download
     """
     os.makedirs(storage_path, exist_ok=True)
 
@@ -120,12 +124,19 @@ def download_file(url, storage_path="/tmp/"):
     extension = get_extension_from_url(url)
     local_filename = os.path.join(storage_path, f"{file_id}{extension}")
 
-    try:
-        response = requests.get(url, stream=True)
-        if response.status_code == 403:
-            # Try authenticated S3 download if possible
+    # Check if this is an S3 URL and try authenticated download first
+    bucket, key = _parse_s3_bucket_key(url)
+    if bucket and key:
+        try:
             if _download_from_s3_with_credentials(url, local_filename):
                 return local_filename
+        except Exception as s3_error:
+            # Log but continue to try public download
+            logging.getLogger(__name__).info(f"S3 authenticated download failed, trying public: {s3_error}")
+
+    # Try public download (for non-S3 URLs or as fallback)
+    try:
+        response = requests.get(url, stream=True)
         response.raise_for_status()
 
         with open(local_filename, 'wb') as f:
