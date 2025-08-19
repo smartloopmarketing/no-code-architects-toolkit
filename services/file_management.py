@@ -22,6 +22,7 @@ import requests
 from urllib.parse import urlparse
 import mimetypes
 import boto3
+import shutil
 
 def get_extension_from_url(url):
     """Extract file extension from URL or content type.
@@ -97,8 +98,13 @@ def _download_from_s3_with_credentials(media_url: str, destination_path: str) ->
     )
     s3 = session.client('s3', endpoint_url=endpoint_url)
 
+    # Use GetObject streaming to avoid implicit HeadObject permission requirement
+    response = s3.get_object(Bucket=bucket, Key=key)
+    body = response.get('Body')
+    if body is None:
+        return False
     with open(destination_path, 'wb') as fh:
-        s3.download_fileobj(bucket, key, fh)
+        shutil.copyfileobj(body, fh)
     return True
 
 def download_file(url, storage_path="/tmp/"):
